@@ -1,0 +1,156 @@
+const axios = require('axios');
+const crypto = require('crypto');
+
+// API keys and endpoints
+const BINANCE_API_KEY = 'your-binance-api-key';
+const BINANCE_API_SECRET = 'your-binance-api-secret';
+const MONITOR_FI_API = 'https://api.monitor.fi/insider-wallets'; // Replace with actual endpoint
+const DEXSCREENER_API = 'https://api.dexscreener.io/latest/dex/tokens'; // Replace with actual endpoint
+const TWEETSCOUT_API = 'https://api.tweetscout.io/media-score'; // Replace with actual endpoint
+const GMGN_API = 'https://api.gmgn.ai/holders-analysis'; // Replace with actual endpoint
+const TOXI_API = 'https://api.toxi.solana/trades'; // Replace with the actual endpoint
+const BINANCE_BASE_URL = 'https://api.binance.com';
+
+// Function to sign requests for Binance API
+function createSignature(queryString) {
+    return crypto
+        .createHmac('sha256', BINANCE_API_SECRET)
+        .update(queryString)
+        .digest('hex');
+}
+
+// Fetch whale trades from Toxi Solana Bot
+async function fetchWhaleActions() {
+    try {
+        const response = await axios.get(`${TOXI_API}/whales`);
+        return response.data; // Assume response contains `symbol`, `action` (BUY/SELL), and `quantity`
+    } catch (error) {
+        console.error('Error fetching whale trades:', error.message);
+    }
+}
+
+// Execute copy trades via Toxi Solana
+async function executeCopyTrade(action, tokenSymbol, quantity) {
+    try {
+        const response = await axios.post(`${TOXI_API}/copytrade`, {
+            action,
+            symbol: tokenSymbol,
+            quantity,
+        });
+        console.log(`Copytrade executed: ${action} ${quantity} of ${tokenSymbol}`);
+    } catch (error) {
+        console.error(`Error executing copy trade for ${tokenSymbol}:`, error.message);
+    }
+}
+
+// Fetch market prices from Binance
+async function fetchMarketPrices() {
+    try {
+        const response = await axios.get(`${BINANCE_BASE_URL}/api/v3/ticker/price`);
+        return response.data;
+    } catch (error) {
+        console.error('Error fetching market prices:', error.message);
+    }
+}
+
+// Fetch insider wallet activity from Monitor.fi
+async function fetchInsiderActivity() {
+    try {
+        const response = await axios.get(MONITOR_FI_API);
+        return response.data;
+    } catch (error) {
+        console.error('Error fetching insider activity:', error.message);
+    }
+}
+
+// Fetch token details from Dexscreener
+async function fetchTokenDetails(tokenAddress) {
+    try {
+        const response = await axios.get(`${DEXSCREENER_API}/${tokenAddress}`);
+        return response.data;
+    } catch (error) {
+        console.error(`Error fetching data for token: ${tokenAddress}`, error.message);
+    }
+}
+
+// Fetch token media score from TweetScout
+async function fetchMediaScore(tokenSymbol) {
+    try {
+        const response = await axios.get(`${TWEETSCOUT_API}?symbol=${tokenSymbol}`);
+        return response.data; // Assume response includes a `mediaScore` field
+    } catch (error) {
+        console.error(`Error fetching media score for ${tokenSymbol}:`, error.message);
+    }
+}
+
+// Fetch holder and supply distribution data from GMGN
+async function analyzeHolders(tokenAddress) {
+    try {
+        const response = await axios.get(`${GMGN_API}?address=${tokenAddress}`);
+        const { topWalletsConnected, supplyDistribution } = response.data;
+
+        const topHolder = Math.max(...supplyDistribution);
+        const isHealthySpread = topHolder <= 0.5; // Ensure no wallet holds more than 50%
+        const isConnected = !topWalletsConnected; // Avoid tokens with highly connected top wallets
+
+        return isHealthySpread && isConnected;
+    } catch (error) {
+        console.error(`Error analyzing holders for ${tokenAddress}:`, error.message);
+    }
+}
+
+// Analyze token data for holders-to-market-cap ratio
+function analyzeToken(data) {
+    const marketCap = data.marketCap; // Assume Dexscreener provides this
+    const holders = data.holdersCount; // Assume Dexscreener provides this
+    const ratio = holders / marketCap;
+
+    console.log(`Token Analysis: Market Cap = ${marketCap}, Holders = ${holders}, Ratio = ${ratio}`);
+    return ratio > 0.0001; // Example threshold for "better distribution"
+}
+
+// Main bot logic
+async function memeTradingBot() {
+    try {
+        const marketPrices = await fetchMarketPrices();
+        const insiderActivity = await fetchInsiderActivity();
+        const whaleActions = await fetchWhaleActions();
+
+        for (const activity of insiderActivity) {
+            const tokenAddress = activity.tokenAddress; // Adjust based on Monitor.fi response format
+            const tokenDetails = await fetchTokenDetails(tokenAddress);
+
+            if (!tokenDetails) {
+                console.error(`No data available for token: ${tokenAddress}`);
+                continue;
+            }
+
+            const promising = analyzeToken(tokenDetails);
+
+            if (promising) {
+                const mediaScoreData = await fetchMediaScore(tokenDetails.symbol);
+                const mediaScore = mediaScoreData?.mediaScore || 0;
+
+                if (mediaScore >= 300) {
+                    const healthyHolders = await analyzeHolders(tokenAddress);
+                    if (healthyHolders) {
+                        const whaleTrade = whaleActions.find(action => action.symbol === tokenDetails.symbol);
+                        if (whaleTrade) {
+                            console.log(`Copytrading whale action: ${whaleTrade.action} ${whaleTrade.quantity} of ${whaleTrade.symbol}`);
+                            await executeCopyTrade(whaleTrade.action, whaleTrade.symbol, whaleTrade.quantity);
+                        }
+                    } else {
+                        console.log(`Token ${tokenDetails.symbol} rejected due to unhealthy holder distribution.`);
+                    }
+                } else {
+                    console.log(`Token ${tokenDetails.symbol} rejected due to low media score.`);
+                }
+            }
+        }
+    } catch (error) {
+        console.error('Error in trading bot:', error.message);
+    }
+}
+
+// Run the bot
+memeTradingBot();
